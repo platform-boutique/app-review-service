@@ -138,7 +138,16 @@ func run(port, dsn string, profiling bool) error {
 	)
 
 	store := reviews.NewPGStore(pool)
-	svc := reviews.NewService(store, log)
+	rateLimit, rateWindow, rateErr := reviews.RateLimitFromEnv(os.Getenv)
+	if rateErr != nil {
+		log.Warnf("AddReview rate limit: %v", rateErr) // a typo keeps the default, it never switches the limit off
+	}
+	if rateLimit > 0 {
+		log.Infof("AddReview rate limit: %d per %s per product+author (per process)", rateLimit, rateWindow)
+	} else {
+		log.Warn("AddReview rate limit is off (REVIEW_RATE_LIMIT=0)")
+	}
+	svc := reviews.NewService(store, log, reviews.WithRateLimit(rateLimit, rateWindow))
 	pb.RegisterReviewServiceServer(srv, svc)
 
 	healthSrv := health.NewServer()

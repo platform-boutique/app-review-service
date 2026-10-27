@@ -64,7 +64,9 @@ func ValidateNewReview(productID, author string, rating int32, comment string) (
 	return NewReview{ProductID: pid, AuthorName: author, Rating: rating, Comment: comment}, nil
 }
 
-// ValidateProductID trims the id and checks it is non-empty and at most MaxProductIDLen characters.
+// ValidateProductID trims the id and checks it is non-empty and at most MaxProductIDLen
+// characters (counted after trimming). Apart from the trim the id is used exactly as given:
+// ids are case sensitive, "Blue-Frock-162" and "blue-frock-162" are different products.
 func ValidateProductID(id string) (string, error) {
 	id = strings.TrimSpace(id)
 	if id == "" {

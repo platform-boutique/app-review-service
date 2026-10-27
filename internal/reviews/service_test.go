@@ -3,8 +3,10 @@ package reviews
 import (
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"sort"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -63,6 +65,11 @@ func (m *memStore) Add(_ context.Context, n NewReview) (Review, error) {
 	if m.err != nil {
 		return Review{}, m.err
 	}
+	for _, r := range m.rows {
+		if r.ProductID == n.ProductID && strings.EqualFold(r.AuthorName, n.AuthorName) && strings.EqualFold(r.Comment, n.Comment) {
+			return Review{}, ErrDuplicate
+		}
+	}
 	m.next++
 	r := Review{ID: string(rune('a' + m.next)), ProductID: n.ProductID, AuthorName: n.AuthorName, Rating: n.Rating,
 		Comment: n.Comment, CreatedAt: time.Unix(1_700_000_000+int64(m.next), 0)}
@@ -97,7 +104,7 @@ func newTestService(t *testing.T) (*Service, *memStore) {
 	l := logrus.New()
 	l.Out = io.Discard
 	st := &memStore{}
-	s := NewService(st, l)
+	s := NewService(st, l, WithRateLimit(0, 0)) // rate limit off: tests add many reviews; see ratelimit_test.go
 	s.SetReady(true)
 	return s, st
 }
@@ -146,7 +153,7 @@ func TestListReviewsPagination(t *testing.T) {
 	s, _ := newTestService(t)
 	ctx := context.Background()
 	for i := 1; i <= 23; i++ {
-		if _, err := s.AddReview(ctx, &pb.AddReviewRequest{ProductId: "p", AuthorName: "A", Rating: int32(i%5 + 1), Comment: "c"}); err != nil {
+		if _, err := s.AddReview(ctx, &pb.AddReviewRequest{ProductId: "p", AuthorName: "A", Rating: int32(i%5 + 1), Comment: fmt.Sprintf("comment %d", i)}); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -192,8 +199,8 @@ func TestListReviewsPagination(t *testing.T) {
 func TestGetRatingSummary(t *testing.T) {
 	s, _ := newTestService(t)
 	ctx := context.Background()
-	for _, r := range []int32{5, 4, 4} {
-		_, _ = s.AddReview(ctx, &pb.AddReviewRequest{ProductId: "a", AuthorName: "A", Rating: r, Comment: "c"})
+	for i, r := range []int32{5, 4, 4} {
+		_, _ = s.AddReview(ctx, &pb.AddReviewRequest{ProductId: "a", AuthorName: "A", Rating: r, Comment: fmt.Sprintf("c%d", i)})
 	}
 	_, _ = s.AddReview(ctx, &pb.AddReviewRequest{ProductId: "b", AuthorName: "B", Rating: 1, Comment: "c"})
 

@@ -4,7 +4,9 @@ import (
 	"context"
 	"errors"
 	"math"
+	"strings"
 	"sync/atomic"
+	"time"
 
 	pb "review-service/proto"
 
@@ -17,15 +19,30 @@ import (
 // Service implements the gRPC ReviewService.
 type Service struct {
 	pb.UnimplementedReviewServiceServer
-	store Store
-	log   *logrus.Logger
-	ready atomic.Bool
+	store   Store
+	log     *logrus.Logger
+	ready   atomic.Bool
+	limiter *RateLimiter
+}
+
+// Option configures NewService.
+type Option func(*Service)
+
+// WithRateLimit sets the AddReview limit per product+author: at most limit
+// reviews per window (limit 0 disables it). Without this option the default
+// applies (DefaultRateLimit per DefaultRateWindow).
+func WithRateLimit(limit int, window time.Duration) Option {
+	return func(s *Service) { s.limiter = NewRateLimiter(limit, window, nil) }
 }
 
 // NewService creates the service. It answers UNAVAILABLE until SetReady(true)
 // (after migrations and seeding have run).
-func NewService(store Store, log *logrus.Logger) *Service {
-	return &Service{store: store, log: log}
+func NewService(store Store, log *logrus.Logger, opts ...Option) *Service {
+	s := &Service{store: store, log: log, limiter: NewRateLimiter(DefaultRateLimit, DefaultRateWindow, nil)}
+	for _, o := range opts {
+		o(s)
+	}
+	return s
 }
 
 // SetReady switches the handlers on or off.
@@ -43,6 +60,8 @@ func (s *Service) toStatus(method string, err error) error {
 	switch {
 	case errors.Is(err, ErrInvalid):
 		return status.Error(codes.InvalidArgument, err.Error())
+	case errors.Is(err, ErrDuplicate):
+		return status.Error(codes.AlreadyExists, "this review was already posted for this product")
 	case errors.Is(err, context.Canceled):
 		return status.Error(codes.Canceled, "request canceled")
 	case errors.Is(err, context.DeadlineExceeded):
@@ -102,7 +121,12 @@ func (s *Service) ListReviews(ctx context.Context, req *pb.ListReviewsRequest) (
 	return resp, nil
 }
 
-// AddReview validates and stores a review.
+// AddReview validates and stores a review. A review whose product, author
+// name and text equal an existing one (case-insensitive, surrounding blanks
+// ignored) is rejected with ALREADY_EXISTS. More than the configured number of
+// reviews per product+author within the window is rejected with
+// RESOURCE_EXHAUSTED (per-process, in memory: see RateLimiter). Neither
+// product ids nor authors are authenticated or checked against the catalog.
 func (s *Service) AddReview(ctx context.Context, req *pb.AddReviewRequest) (*pb.Review, error) {
 	n, err := ValidateNewReview(req.GetProductId(), req.GetAuthorName(), req.GetRating(), req.GetComment())
 	if err != nil {
@@ -110,6 +134,10 @@ func (s *Service) AddReview(ctx context.Context, req *pb.AddReviewRequest) (*pb.
 	}
 	if err := s.checkReady(); err != nil {
 		return nil, err
+	}
+	if ok, retry := s.limiter.Allow(rateKey(n)); !ok {
+		s.log.WithFields(logrus.Fields{"product_id": n.ProductID}).Warn("[AddReview] rate limited")
+		return nil, status.Errorf(codes.ResourceExhausted, "too many reviews from this author for this product, try again in %d seconds", int64(math.Ceil(retry.Seconds())))
 	}
 	r, err := s.store.Add(ctx, n)
 	if err != nil {
@@ -143,4 +171,10 @@ func BuildSummaries(ids []string, found map[string]Summary) []*pb.RatingSummary 
 		out = append(out, &pb.RatingSummary{ProductId: id, Average: Round1(sm.Average), Count: clampInt32(sm.Count)})
 	}
 	return out
+}
+
+// rateKey identifies one author on one product for the rate limit. The author
+// is compared case-insensitively, like the duplicate check.
+func rateKey(n NewReview) string {
+	return n.ProductID + "\x1f" + strings.ToLower(n.AuthorName)
 }

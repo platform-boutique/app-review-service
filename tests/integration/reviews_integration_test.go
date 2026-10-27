@@ -270,3 +270,68 @@ func TestUnreachableDatabase(t *testing.T) {
 		t.Error("Setup succeeded without a database")
 	}
 }
+
+// Duplicate reviews are rejected by the real store, also when identical calls race.
+func TestAddReviewDuplicates(t *testing.T) {
+	p := newPool(t, freshDB(t))
+	ctx := context.Background()
+	if _, _, err := reviews.Setup(ctx, p, nil); err != nil {
+		t.Fatal(err)
+	}
+	l := logrus.New()
+	l.Out = io.Discard
+	svc := reviews.NewService(reviews.NewPGStore(p), l, reviews.WithRateLimit(0, 0))
+	svc.SetReady(true)
+	add := func(product, author, comment string) error {
+		_, err := svc.AddReview(ctx, &pb.AddReviewRequest{ProductId: product, AuthorName: author, Rating: 5, Comment: comment})
+		return err
+	}
+
+	if err := add("p", "Zoë Ärger", "Schön und günstig"); err != nil {
+		t.Fatal(err)
+	}
+	for _, c := range [][3]string{
+		{"p", "Zoë Ärger", "Schön und günstig"},
+		{"p", "  ZOË ÄRGER ", "SCHÖN UND GÜNSTIG"},
+		{" p ", "zoë ärger", "schön und günstig\n"},
+	} {
+		if err := add(c[0], c[1], c[2]); status.Code(err) != codes.AlreadyExists {
+			t.Errorf("%q: %v, want AlreadyExists", c, err)
+		}
+	}
+	for _, c := range [][3]string{{"q", "Zoë Ärger", "Schön und günstig"}, {"p", "Bob", "Schön und günstig"}, {"p", "Zoë Ärger", "Schön"}, {"P", "Zoë Ärger", "Schön und günstig"}} {
+		if err := add(c[0], c[1], c[2]); err != nil {
+			t.Errorf("%q should be accepted: %v", c, err)
+		}
+	}
+
+	// 20 identical concurrent calls: exactly one is stored.
+	var wg sync.WaitGroup
+	var mu sync.Mutex
+	ok, dup := 0, 0
+	for i := 0; i < 20; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			err := add("race", "Racer", "same text")
+			mu.Lock()
+			defer mu.Unlock()
+			switch status.Code(err) {
+			case codes.OK:
+				ok++
+			case codes.AlreadyExists:
+				dup++
+			default:
+				t.Errorf("unexpected: %v", err)
+			}
+		}()
+	}
+	wg.Wait()
+	if ok != 1 || dup != 19 {
+		t.Errorf("concurrent identical adds: %d stored, %d duplicates; want 1 and 19", ok, dup)
+	}
+	var n int
+	if err := p.QueryRow(ctx, `SELECT count(*) FROM reviews WHERE product_id = 'race'`).Scan(&n); err != nil || n != 1 {
+		t.Errorf("rows for 'race': %d, %v", n, err)
+	}
+}
