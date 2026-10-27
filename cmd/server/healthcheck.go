@@ -21,7 +21,7 @@ func healthcheck(port string) int {
 		fmt.Fprintln(os.Stderr, "healthcheck:", err)
 		return 1
 	}
-	defer conn.Close()
+	defer func() { _ = conn.Close() }()
 	resp, err := healthpb.NewHealthClient(conn).Check(ctx, &healthpb.HealthCheckRequest{})
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "healthcheck:", err)

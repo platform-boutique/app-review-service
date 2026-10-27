@@ -36,7 +36,7 @@ func Migrate(ctx context.Context, pool *pgxpool.Pool) ([]*goose.MigrationResult,
 		return nil, err
 	}
 	db := stdlib.OpenDBFromPool(pool)
-	defer db.Close()
+	defer func() { _ = db.Close() }()
 	provider, err := goose.NewProvider(goose.DialectPostgres, db, sub, goose.WithSessionLocker(locker))
 	if err != nil {
 		return nil, err
