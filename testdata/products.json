@@ -1,0 +1,11 @@
+[
+ {"id": "fixture-tee", "name": "Fixture T-shirt", "reviews": [
+  {"reviewer_name": "Ada Lovelace", "rating": 5, "comment": "Soft and fits well.", "date": "2025-04-30T09:41:02.053Z"},
+  {"reviewer_name": "Alan Turing", "rating": 4, "comment": "Good value.", "date": "2025-05-01T10:00:00Z"},
+  {"reviewer_name": "Grace Hopper", "rating": 2, "comment": "Shrank after one wash.", "date": "2025-05-02T11:30:00.5Z"}
+ ]},
+ {"id": "fixture-mug", "name": "Fixture mug", "reviews": [
+  {"reviewerName": "Linus T.", "rating": 3, "comment": "It is a mug. Holds coffee. Ünïcödé ok ☕", "date": "2025-06-10T08:00:00+02:00"}
+ ]},
+ {"id": "fixture-empty", "name": "No reviews yet", "reviews": []}
+]

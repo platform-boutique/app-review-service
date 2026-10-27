@@ -1,0 +1,30 @@
+[
+ {
+  "product_id": "fixture-mug",
+  "author_name": "Linus T.",
+  "rating": 3,
+  "comment": "It is a mug. Holds coffee. Ünïcödé ok ☕",
+  "created_at": "2025-06-10T06:00:00.000Z"
+ },
+ {
+  "product_id": "fixture-tee",
+  "author_name": "Ada Lovelace",
+  "rating": 5,
+  "comment": "Soft and fits well.",
+  "created_at": "2025-04-30T09:41:02.053Z"
+ },
+ {
+  "product_id": "fixture-tee",
+  "author_name": "Alan Turing",
+  "rating": 4,
+  "comment": "Good value.",
+  "created_at": "2025-05-01T10:00:00.000Z"
+ },
+ {
+  "product_id": "fixture-tee",
+  "author_name": "Grace Hopper",
+  "rating": 2,
+  "comment": "Shrank after one wash.",
+  "created_at": "2025-05-02T11:30:00.500Z"
+ }
+]
