@@ -33,7 +33,7 @@ func (s *Service) SetReady(ok bool) { s.ready.Store(ok) }
 
 func (s *Service) checkReady() error {
 	if !s.ready.Load() {
-		return status.Error(codes.Unavailable, "review-service is starting: database not ready")
+		return status.Error(codes.Unavailable, "database not ready")
 	}
 	return nil
 }
