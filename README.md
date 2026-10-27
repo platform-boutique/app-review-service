@@ -85,6 +85,13 @@ Multi-stage [`Dockerfile`](Dockerfile): `golang:1.26-alpine` builder (`--platfor
 - **EXPOSE:** `8084`, `9090`. `.dockerignore` keeps `.git`, tests and tools out of the context.
 - Built once locally on amd64 (`docker build -t review-service:local .`, about 12 MB); arm64 was not built.
 
+## Used by (local shop)
+
+- **frontend** (env `REVIEW_SERVICE_ADDR`, default `review-service:8084`) calls `GetRatingSummary` once per catalogue page for the stars on the cards, and `ListReviews` / `AddReview` on the product page. If this service is down the pages render without stars and posting returns 503; `ALREADY_EXISTS` and `RESOURCE_EXHAUSTED` from `AddReview` are shown as readable messages (422 / 429).
+- The catalog's own `rating` and `review_count` are derived from this service's seed (`apps/product-catalog-service/tools/sync_reviews.py`); re-run it whenever `data/reviews.json` changes, otherwise the "Top rated" sort and the displayed stars disagree.
+
+The local stack (`local/compose.yaml` in the workspace) runs `review-db` and `review-service` on port 8084. Run on the live stack: the frontend shows the seeded ratings and reviews and `AddReview` works. Not available yet: star distribution bars (the API has no per-star counts; additive `star_counts` is on the board).
+
 ## Not deployed anywhere yet
 
 No Helm chart, pipeline, Backstage entry or GitHub repository exists yet; the service is only built and run locally (docker compose in `local/` is the first target).
