@@ -72,9 +72,25 @@ func newPool(t *testing.T, dsn string) *pgxpool.Pool {
 	return p
 }
 
+// seed returns the embedded production seed (data/reviews.json).
 func seed(t *testing.T) []reviews.SeedReview {
 	t.Helper()
 	items, err := reviews.ParseSeed(data.Reviews)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return items
+}
+
+// fixtureSeed returns the small fixture (testdata/reviews.fixture.json, made by tools/make_reviews.py
+// from testdata/products.json) whose ratings the assertions below rely on.
+func fixtureSeed(t *testing.T) []reviews.SeedReview {
+	t.Helper()
+	raw, err := os.ReadFile("../../testdata/reviews.fixture.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	items, err := reviews.ParseSeed(raw)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -165,7 +181,7 @@ func TestConcurrentStarts(t *testing.T) {
 func TestAddListSummary(t *testing.T) {
 	p := newPool(t, freshDB(t))
 	ctx := context.Background()
-	if _, _, err := reviews.Setup(ctx, p, seed(t)); err != nil {
+	if _, _, err := reviews.Setup(ctx, p, fixtureSeed(t)); err != nil {
 		t.Fatal(err)
 	}
 	l := logrus.New()

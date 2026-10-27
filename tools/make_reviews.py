@@ -8,14 +8,18 @@ Input:  a JSON array of products (or {"products": [...]}), each with "id" and
         ("reviewerName" is accepted too, as in the DummyJSON original).
 Output: a JSON array of {"product_id", "author_name", "rating", "comment", "created_at"},
         sorted by product id and date, so re-running it gives a byte-identical file.
+With --spread-until DATE, created_at is NOT taken from the source but spread deterministically
+(SHA-256 of product id + review index) over the 365 days before DATE, because the source reviews
+all carry the same timestamp; rating and comment are kept as in the source.
 Entries that break the AddReview limits are reported and skipped; the script fails if any are.
 Standard library only.
 """
 
 import argparse
+import hashlib
 import json
 import sys
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 MAX_AUTHOR = 80
 MAX_COMMENT = 2000
@@ -36,7 +40,13 @@ def parse_date(value):
     return dt.strftime("%Y-%m-%dT%H:%M:%S.") + f"{dt.microsecond // 1000:03d}Z"
 
 
-def convert(products):
+def spread_date(until, pid, i):
+    h = int.from_bytes(hashlib.sha256(f"{pid}#{i}".encode()).digest()[:8], "big")
+    dt = until - timedelta(seconds=h % (365 * 24 * 3600))
+    return dt.strftime("%Y-%m-%dT%H:%M:%S.000Z")
+
+
+def convert(products, until=None):
     out, problems = [], []
     for p in products:
         pid = str(p.get("id", "")).strip()
@@ -59,6 +69,8 @@ def convert(products):
                 continue
             try:
                 created = parse_date(r.get("date"))
+                if until is not None:
+                    created = spread_date(until, pid, i)
             except ValueError as e:
                 problems.append(f"{where}: date {r.get('date')!r} ({e})")
                 continue
@@ -77,7 +89,11 @@ def main():
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument("products", help="path to products.json")
     ap.add_argument("-o", "--out", default="data/reviews.json", help="output file (default: data/reviews.json)")
+    ap.add_argument("--spread-until", help="spread created_at over the year before this ISO date (UTC)")
     args = ap.parse_args()
+    until = None
+    if args.spread_until:
+        until = datetime.fromisoformat(parse_date(args.spread_until).replace("Z", "+00:00"))
 
     with open(args.products, encoding="utf-8") as f:
         doc = json.load(f)
@@ -85,7 +101,7 @@ def main():
     if not isinstance(products, list):
         sys.exit("input must be a JSON array of products or an object with a 'products' array")
 
-    reviews, problems = convert(products)
+    reviews, problems = convert(products, until)
     for msg in problems:
         print("skipped:", msg, file=sys.stderr)
     with open(args.out, "w", encoding="utf-8") as f:
