@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"os"
+	"strings"
 	"time"
 
 	"github.com/sirupsen/logrus"
@@ -23,19 +24,23 @@ import (
 
 // otlpEndpoint resolves the OTLP/gRPC collector URL (scheme required, e.g. http://alloy:4317).
 // OTEL_EXPORTER_OTLP_ENDPOINT is the standard variable; COLLECTOR_SERVICE_ADDR (host:port) is a
-// legacy fallback. An empty result means telemetry is disabled.
+// legacy fallback. An empty result means telemetry is disabled; OTEL_SDK_DISABLED=true (the standard
+// OpenTelemetry switch) and the legacy ENABLE_TRACING=0 force it off even when an endpoint is set.
 func otlpEndpoint() string {
-	if os.Getenv("ENABLE_TRACING") == "0" {
+	if strings.EqualFold(strings.TrimSpace(os.Getenv("OTEL_SDK_DISABLED")), "true") || os.Getenv("ENABLE_TRACING") == "0" {
 		return ""
 	}
-	if ep := os.Getenv("OTEL_EXPORTER_OTLP_ENDPOINT"); ep != "" {
+	if ep := strings.TrimSpace(os.Getenv("OTEL_EXPORTER_OTLP_ENDPOINT")); ep != "" {
 		return ep
 	}
-	if addr := os.Getenv("COLLECTOR_SERVICE_ADDR"); addr != "" {
+	if addr := strings.TrimSpace(os.Getenv("COLLECTOR_SERVICE_ADDR")); addr != "" {
 		return "http://" + addr
 	}
 	return ""
 }
+
+// errTelemetryOff is returned by initTelemetry when no endpoint is configured (not a failure).
+var errTelemetryOff = errors.New("no OTLP endpoint configured")
 
 // initTelemetry pushes traces, metrics and logs over OTLP/gRPC to the collector.
 //
@@ -49,7 +54,7 @@ func otlpEndpoint() string {
 func initTelemetry(ctx context.Context, defaultServiceName string, loggers ...*logrus.Logger) (func(context.Context) error, error) {
 	endpoint := otlpEndpoint()
 	if endpoint == "" {
-		return func(context.Context) error { return nil }, errors.New("OTEL_EXPORTER_OTLP_ENDPOINT not set")
+		return func(context.Context) error { return nil }, errTelemetryOff
 	}
 
 	serviceName := os.Getenv("OTEL_SERVICE_NAME")

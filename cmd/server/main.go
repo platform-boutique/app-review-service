@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/signal"
 	"runtime/debug"
+	"strings"
 	"syscall"
 	"time"
 
@@ -63,9 +64,12 @@ func main() {
 
 	// --- Telemetry: traces, metrics and logs pushed over OTLP/gRPC (Alloy → Tempo/Mimir/Loki) ---
 	shutdownTelemetry, err := initTelemetry(context.Background(), serviceName, log)
-	if err != nil {
+	switch {
+	case errors.Is(err, errTelemetryOff):
+		log.Info("telemetry off — set OTEL_EXPORTER_OTLP_ENDPOINT to enable")
+	case err != nil:
 		log.Warnf("telemetry disabled, continuing without it: %v", err)
-	} else {
+	default:
 		log.Info("telemetry enabled (OTLP/gRPC)")
 		defer func() {
 			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
@@ -74,12 +78,12 @@ func main() {
 		}()
 	}
 
-	// --- Profiling (Pyroscope push + pprof HTTP), both only with ENABLE_PROFILING=1 ---
-	profiling := os.Getenv("ENABLE_PROFILING") == "1"
+	// --- Profiling (Pyroscope push + pprof HTTP), only with PYROSCOPE_ADDR set and ENABLE_PROFILING != 0 ---
+	pyroscopeAddr, profiling := profilingConfig()
 	if profiling {
-		initProfiling()
+		initProfiling(pyroscopeAddr)
 	} else {
-		log.Info("profiling disabled — set ENABLE_PROFILING=1 to enable")
+		log.Info("profiling off — set PYROSCOPE_ADDR to enable")
 	}
 
 	dsn := os.Getenv("DATABASE_URL")
@@ -277,12 +281,18 @@ func recoverUnary(ctx context.Context, req any, info *grpc.UnaryServerInfo, hand
 	return handler(ctx, req)
 }
 
-// initProfiling starts the Pyroscope push-based profiler.
-func initProfiling() {
-	pyroscopeAddr := os.Getenv("PYROSCOPE_ADDR")
-	if pyroscopeAddr == "" {
-		pyroscopeAddr = "http://pyroscope:4040"
+// profilingConfig returns the Pyroscope address and whether profiling is on:
+// only when PYROSCOPE_ADDR is set and non-empty and ENABLE_PROFILING is not "0".
+func profilingConfig() (string, bool) {
+	addr := strings.TrimSpace(os.Getenv("PYROSCOPE_ADDR"))
+	if addr == "" || os.Getenv("ENABLE_PROFILING") == "0" {
+		return "", false
 	}
+	return addr, true
+}
+
+// initProfiling starts the Pyroscope push-based profiler.
+func initProfiling(pyroscopeAddr string) {
 
 	_, err := pyroscope.Start(pyroscope.Config{
 		ApplicationName: serviceName,
