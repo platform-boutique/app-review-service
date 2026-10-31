@@ -12,7 +12,7 @@ service ReviewService {
   rpc ListReviews(ListReviewsRequest) returns (ListReviewsResponse);
   // AddReview stores a new review; the server sets id and created_at.
   rpc AddReview(AddReviewRequest) returns (Review);
-  // GetRatingSummary returns average and count for each requested product.
+  // GetRatingSummary returns average, count and the per-star counts for each requested product.
   rpc GetRatingSummary(GetRatingSummaryRequest) returns (GetRatingSummaryResponse);
 }
 
@@ -52,6 +52,10 @@ message RatingSummary {
   string product_id = 1;
   double average = 2; // 1 decimal; 0 when count is 0
   int32 count = 3;
+  // Always exactly 5 entries: index 0 = number of 1-star reviews ... index 4 = number of 5-star
+  // reviews (zeros when count is 0). sum(star_counts) == count; computed together with
+  // average and count in one query.
+  repeated int32 star_counts = 4;
 }
 
 message GetRatingSummaryResponse {

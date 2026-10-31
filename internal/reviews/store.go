@@ -29,6 +29,8 @@ type Summary struct {
 	ProductID string
 	Average   float64 // already rounded to one decimal
 	Count     int64
+	// Stars[i] is the number of reviews with rating i+1; it always sums to Count.
+	Stars [5]int64
 }
 
 // Store is what the gRPC handlers need from the storage layer.
@@ -38,7 +40,8 @@ type Store interface {
 	// Add stores a review and returns it with id and created_at set, or ErrDuplicate
 	// if an equal review (same product, author and text, compared case-insensitively) exists.
 	Add(ctx context.Context, r NewReview) (Review, error)
-	// Summaries returns the summaries of the given products that have at least one review.
+	// Summaries returns the summaries (average, count and per-star counts, all from one statement and
+	// therefore one snapshot) of the given products that have at least one review.
 	Summaries(ctx context.Context, productIDs []string) (map[string]Summary, error)
 	// Ping checks that the database answers.
 	Ping(ctx context.Context) error
@@ -193,7 +196,10 @@ func (s *PGStore) Summaries(ctx context.Context, productIDs []string) (map[strin
 		return out, nil
 	}
 	rows, err := s.pool.Query(ctx,
-		`SELECT product_id, round(avg(rating), 1)::float8, count(*)
+		`SELECT product_id, round(avg(rating), 1)::float8, count(*),
+		        count(*) FILTER (WHERE rating = 1), count(*) FILTER (WHERE rating = 2),
+		        count(*) FILTER (WHERE rating = 3), count(*) FILTER (WHERE rating = 4),
+		        count(*) FILTER (WHERE rating = 5)
 		   FROM reviews
 		  WHERE product_id = ANY($1)
 		  GROUP BY product_id`,
@@ -204,7 +210,8 @@ func (s *PGStore) Summaries(ctx context.Context, productIDs []string) (map[strin
 	defer rows.Close()
 	for rows.Next() {
 		var sm Summary
-		if err := rows.Scan(&sm.ProductID, &sm.Average, &sm.Count); err != nil {
+		if err := rows.Scan(&sm.ProductID, &sm.Average, &sm.Count,
+			&sm.Stars[0], &sm.Stars[1], &sm.Stars[2], &sm.Stars[3], &sm.Stars[4]); err != nil {
 			return nil, classify(err)
 		}
 		out[sm.ProductID] = sm

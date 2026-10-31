@@ -1,6 +1,6 @@
 # review-service
 
-A gRPC service that stores product reviews and star ratings for the platform-demo store: one page of a product's reviews (newest first), adding a review, and rating summaries (average + count) for many products at once, for the product grid. It owns its own Postgres database, creates its schema with embedded migrations at start-up and seeds it once from the store dataset.
+A gRPC service that stores product reviews and star ratings for the platform-demo store: one page of a product's reviews (newest first), adding a review, and rating summaries (average, count and the per-star distribution) for many products at once, for the product grid. It owns its own Postgres database, creates its schema with embedded migrations at start-up and seeds it once from the store dataset.
 
 ## At a glance
 
@@ -24,9 +24,10 @@ Package `hipstershop`, service `ReviewService` ([`proto/reviews.proto`](proto/re
 |---|---|---|---|
 | `ListReviews` | `{ product_id, int32 page, int32 page_size }` | `{ repeated Review reviews, int32 total, double average_rating }` | Newest first (`created_at DESC`, id as tie-break). `page` is 1-based, `0` means 1; `page_size` `0` means 10, above 50 is capped at 50. `total` and `average_rating` (1 decimal, 0 if none) cover all reviews of the product. A page past the end returns no reviews. Empty `product_id` or negative values: `INVALID_ARGUMENT` |
 | `AddReview` | `{ product_id, author_name, int32 rating, comment }` | `Review` | Text fields are trimmed; `product_id` 1-128, `author_name` 1-80, `comment` 1-2000 characters (runes), `rating` 1-5, no NUL characters, otherwise `INVALID_ARGUMENT`. The server sets `id` (UUID) and `created_at`. **Abuse limits** (below): an equal review → `ALREADY_EXISTS`; too many from one author on one product → `RESOURCE_EXHAUSTED` |
-| `GetRatingSummary` | `{ repeated string product_ids }` (max 200) | `{ repeated RatingSummary summaries }` | One entry per distinct id, in request order; `average` has 1 decimal; products without reviews come back with `count` 0 (and `average` 0). More than 200 ids or an empty id: `INVALID_ARGUMENT` |
+| `GetRatingSummary` | `{ repeated string product_ids }` (max 200) | `{ repeated RatingSummary summaries }` | One entry per distinct id, in request order; `average` has 1 decimal; products without reviews (and unknown ids) come back with `count` 0, `average` 0 and `star_counts` all zeros. More than 200 ids or an empty id: `INVALID_ARGUMENT` |
 
 `Review` = `{ id, product_id, author_name, int32 rating, comment, google.protobuf.Timestamp created_at }`.
+`RatingSummary` = `{ product_id, double average, int32 count, repeated int32 star_counts }`. `star_counts` always has exactly 5 entries: index 0 = number of 1-star reviews ... index 4 = number of 5-star reviews, so `sum(star_counts) == count`. Average, count and the five buckets come out of one SQL statement (`count(*) FILTER (WHERE rating = k)`), i.e. one snapshot, so a concurrent `AddReview` can never make them disagree. The field is additive (tag 4); older clients ignore it.
 Errors: `UNAVAILABLE` while the database is not ready/reachable, `INTERNAL` (without SQL details, which are logged) for other storage errors. A recovery interceptor turns a handler panic into `INTERNAL`. Product ids are not checked against the catalog.
 
 **Product ids** are trimmed and otherwise used exactly as given: they are **case sensitive** (`Blue-Frock-162` and `blue-frock-162` are two different products), at most 128 characters after trimming (more → `INVALID_ARGUMENT`), no NUL. Callers must send the catalog's id spelling.
@@ -90,7 +91,7 @@ Multi-stage [`Dockerfile`](Dockerfile): `golang:1.26-alpine` builder (`--platfor
 - **frontend** (env `REVIEW_SERVICE_ADDR`, default `review-service:8084`) calls `GetRatingSummary` once per catalogue page for the stars on the cards, and `ListReviews` / `AddReview` on the product page. If this service is down the pages render without stars and posting returns 503; `ALREADY_EXISTS` and `RESOURCE_EXHAUSTED` from `AddReview` are shown as readable messages (422 / 429).
 - The catalog's own `rating` and `review_count` are derived from this service's seed (`apps/product-catalog-service/tools/sync_reviews.py`); re-run it whenever `data/reviews.json` changes, otherwise the "Top rated" sort and the displayed stars disagree.
 
-The local stack (`local/compose.yaml` in the workspace) runs `review-db` and `review-service` on port 8084. Run on the live stack: the frontend shows the seeded ratings and reviews and `AddReview` works. Not available yet: star distribution bars (the API has no per-star counts; additive `star_counts` is on the board).
+The local stack (`local/compose.yaml` in the workspace) runs `review-db` and `review-service` on port 8084. Run on the live stack: the frontend shows the seeded ratings and reviews and `AddReview` works. The API now returns `star_counts`; the frontend does not draw the bars yet (slice 7, frontend agent). The running image has not been rebuilt with this change (not run).
 
 ## Not deployed anywhere yet
 
@@ -103,6 +104,9 @@ Requirements: Go 1.26 (`GOTOOLCHAIN=auto` fetches it), Docker, [`grpcurl`](https
 What was actually run:
 
 ```bash
+# regenerate the Go code after editing proto/reviews.proto (protoc 3.21.12, protoc-gen-go v1.36.11, protoc-gen-go-grpc 1.6.1)
+protoc --go_out=. --go_opt=paths=source_relative --go-grpc_out=. --go-grpc_opt=paths=source_relative proto/reviews.proto
+
 # unit tests (validation, pagination, summaries, error mapping, telemetry switches) + vet
 go vet ./... && go test ./...
 
@@ -120,7 +124,9 @@ docker run -d --name review-smoke-svc --network review-smoke -p 127.0.0.1:58084:
 ```
 
 The smoke run checked: health `SERVING` and Docker health `healthy`, the three RPCs above, `INVALID_ARGUMENT` for rating 9, health `NOT_SERVING` + `UNAVAILABLE` after disconnecting the database from the network and `SERVING` again after reconnecting it, and exit code 0 on `docker stop`.
-`golangci-lint run` (default linters) and `gosec -exclude-generated ./...` report no issues.
+`golangci-lint run` (default linters) and `gosec -exclude-generated ./...` report no issues (both re-run after the `star_counts` change).
+
+`star_counts` (slice 7) was verified with unit tests (in-memory store: bucket arithmetic, five zeros for unknown products) and integration tests against a throwaway `postgres:17-alpine`: zero reviews, unknown product, every seeded product's distribution equal to a direct SQL count, and 8 concurrent writers adding 200 reviews while 4 readers called `GetRatingSummary` (every answer had 5 entries summing to `count`, `count` never decreased, final counts exact). The container image was not rebuilt and the gRPC call was not made against a running container (not run).
 
 Seed data: `python3 tools/make_reviews.py <product-catalog-service>/data/seed/products.json --spread-until 2026-10-01T00:00:00Z` (Python 3.11+, standard library). Ratings, comments and names come from the catalog dataset; because every source review has the same timestamp, `--spread-until` spreads `created_at` deterministically (SHA-256 of product id + index) over the year before that date. The output is sorted, so a re-run is byte-identical.
 

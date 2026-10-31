@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"slices"
 	"sort"
 	"strings"
 	"sync"
@@ -84,14 +85,18 @@ func (m *memStore) Summaries(_ context.Context, ids []string) (map[string]Summar
 		return nil, m.err
 	}
 	sums := map[string][2]int64{}
+	stars := map[string][5]int64{}
 	for _, r := range m.rows {
 		s := sums[r.ProductID]
 		sums[r.ProductID] = [2]int64{s[0] + int64(r.Rating), s[1] + 1}
+		st := stars[r.ProductID]
+		st[r.Rating-1]++
+		stars[r.ProductID] = st
 	}
 	out := map[string]Summary{}
 	for _, id := range ids {
 		if s, ok := sums[id]; ok {
-			out[id] = Summary{ProductID: id, Average: Round1(float64(s[0]) / float64(s[1])), Count: s[1]}
+			out[id] = Summary{ProductID: id, Average: Round1(float64(s[0]) / float64(s[1])), Count: s[1], Stars: stars[id]}
 		}
 	}
 	return out, nil
@@ -212,13 +217,18 @@ func TestGetRatingSummary(t *testing.T) {
 		id    string
 		avg   float64
 		count int32
-	}{{"none", 0, 0}, {"a", 4.3, 3}, {"b", 1, 1}}
+		stars []int32
+	}{
+		{"none", 0, 0, []int32{0, 0, 0, 0, 0}},
+		{"a", 4.3, 3, []int32{0, 0, 0, 2, 1}},
+		{"b", 1, 1, []int32{1, 0, 0, 0, 0}},
+	}
 	if len(resp.Summaries) != len(want) {
 		t.Fatalf("got %d summaries, want %d", len(resp.Summaries), len(want))
 	}
 	for i, w := range want {
 		g := resp.Summaries[i]
-		if g.ProductId != w.id || g.Average != w.avg || g.Count != w.count {
+		if g.ProductId != w.id || g.Average != w.avg || g.Count != w.count || !slices.Equal(g.StarCounts, w.stars) {
 			t.Errorf("summary %d = %v, want %+v", i, g, w)
 		}
 	}
@@ -275,5 +285,39 @@ func TestParseSeedRejectsBadEntries(t *testing.T) {
 		if _, err := ParseSeed([]byte(raw)); err == nil {
 			t.Errorf("ParseSeed(%s) accepted bad input", raw)
 		}
+	}
+}
+
+// Every summary has exactly five star counts that sum to count, for products with and without reviews.
+func TestSummaryStarCountsInvariant(t *testing.T) {
+	s, _ := newTestService(t)
+	ctx := context.Background()
+	ratings := []int32{1, 1, 2, 3, 3, 3, 5, 5, 5, 5, 4}
+	for i, r := range ratings {
+		if _, err := s.AddReview(ctx, &pb.AddReviewRequest{ProductId: "p", AuthorName: "A", Rating: r, Comment: fmt.Sprintf("c%d", i)}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	resp, err := s.GetRatingSummary(ctx, &pb.GetRatingSummaryRequest{ProductIds: []string{"p", "unknown"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := resp.Summaries[0].StarCounts; !slices.Equal(got, []int32{2, 1, 3, 1, 4}) {
+		t.Errorf("star_counts = %v, want [2 1 3 1 4]", got)
+	}
+	for _, sm := range resp.Summaries {
+		if len(sm.StarCounts) != 5 {
+			t.Fatalf("%s: %d star_counts, want 5", sm.ProductId, len(sm.StarCounts))
+		}
+		var sum int32
+		for _, c := range sm.StarCounts {
+			sum += c
+		}
+		if sum != sm.Count {
+			t.Errorf("%s: sum(star_counts) %d != count %d", sm.ProductId, sum, sm.Count)
+		}
+	}
+	if resp.Summaries[1].Count != 0 || !slices.Equal(resp.Summaries[1].StarCounts, make([]int32, 5)) {
+		t.Errorf("unknown product = %v, want count 0 and five zeros", resp.Summaries[1])
 	}
 }

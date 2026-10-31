@@ -147,7 +147,7 @@ func (s *Service) AddReview(ctx context.Context, req *pb.AddReviewRequest) (*pb.
 	return toPB(r), nil
 }
 
-// GetRatingSummary returns average and count per requested product; products without reviews get count 0.
+// GetRatingSummary returns average, count and star_counts per requested product; products without reviews get count 0 and five zeros.
 func (s *Service) GetRatingSummary(ctx context.Context, req *pb.GetRatingSummaryRequest) (*pb.GetRatingSummaryResponse, error) {
 	ids, err := SummaryIDs(req.GetProductIds())
 	if err != nil {
@@ -168,7 +168,11 @@ func BuildSummaries(ids []string, found map[string]Summary) []*pb.RatingSummary 
 	out := make([]*pb.RatingSummary, 0, len(ids))
 	for _, id := range ids {
 		sm := found[id]
-		out = append(out, &pb.RatingSummary{ProductId: id, Average: Round1(sm.Average), Count: clampInt32(sm.Count)})
+		stars := make([]int32, len(sm.Stars)) // always 5 entries, zeros for unknown products
+		for i, c := range sm.Stars {
+			stars[i] = clampInt32(c)
+		}
+		out = append(out, &pb.RatingSummary{ProductId: id, Average: Round1(sm.Average), Count: clampInt32(sm.Count), StarCounts: stars})
 	}
 	return out
 }

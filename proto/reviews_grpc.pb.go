@@ -34,7 +34,7 @@ type ReviewServiceClient interface {
 	ListReviews(ctx context.Context, in *ListReviewsRequest, opts ...grpc.CallOption) (*ListReviewsResponse, error)
 	// AddReview stores a new review; the server sets id and created_at.
 	AddReview(ctx context.Context, in *AddReviewRequest, opts ...grpc.CallOption) (*Review, error)
-	// GetRatingSummary returns average and count for each requested product.
+	// GetRatingSummary returns average, count and the per-star counts for each requested product.
 	GetRatingSummary(ctx context.Context, in *GetRatingSummaryRequest, opts ...grpc.CallOption) (*GetRatingSummaryResponse, error)
 }
 
@@ -86,7 +86,7 @@ type ReviewServiceServer interface {
 	ListReviews(context.Context, *ListReviewsRequest) (*ListReviewsResponse, error)
 	// AddReview stores a new review; the server sets id and created_at.
 	AddReview(context.Context, *AddReviewRequest) (*Review, error)
-	// GetRatingSummary returns average and count for each requested product.
+	// GetRatingSummary returns average, count and the per-star counts for each requested product.
 	GetRatingSummary(context.Context, *GetRatingSummaryRequest) (*GetRatingSummaryResponse, error)
 	mustEmbedUnimplementedReviewServiceServer()
 }
