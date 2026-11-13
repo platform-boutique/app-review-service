@@ -1,0 +1,47 @@
+apiVersion: backstage.io/v1alpha1
+kind: Component
+metadata:
+  name: review-service
+  title: review-service
+  description: "A gRPC service that stores product reviews and star ratings for the Everly shop."
+  annotations:
+    github.com/project-slug: platform-boutique/app-review-service
+    backstage.io/source-location: url:https://github.com/platform-boutique/app-review-service/tree/main/
+    backstage.io/techdocs-ref: dir:.
+    grafana/dashboard-selector: "tags @> 'review'"
+    grafana/alert-label-selector: "service=review-service"
+  tags: [go, grpc, postgres]
+spec:
+  type: service
+  lifecycle: experimental
+  owner: group:default/maintainers
+  system: everly
+  providesApis: [review-service-api]
+  dependsOn:
+    - resource:default/review-db
+---
+apiVersion: backstage.io/v1alpha1
+kind: Resource
+metadata:
+  name: review-db
+  description: Postgres database owned by review-service (table reviews).
+spec:
+  type: database
+  owner: group:default/maintainers
+  system: everly
+---
+apiVersion: backstage.io/v1alpha1
+kind: API
+metadata:
+  name: review-service-api
+  description: gRPC interface of review-service (Protocol Buffers).
+  tags: [grpc, protobuf]
+  links:
+    - { url: "https://github.com/platform-boutique/app-review-service/blob/main/proto/reviews.proto", title: "reviews.proto on GitHub", icon: code }
+spec:
+  type: grpc
+  lifecycle: experimental
+  owner: group:default/maintainers
+  system: everly
+  definition:
+    $text: ./proto/reviews.proto

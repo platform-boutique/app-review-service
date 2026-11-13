@@ -1,0 +1,26 @@
+site_name: review-service
+site_description: >-
+  A gRPC service that stores product reviews and star ratings for the Everly
+  shop.
+repo_url: https://github.com/platform-boutique/app-review-service
+edit_uri: edit/main/docs/
+nav:
+  - Overview: index.md
+  - Architecture: architecture.md
+  - API: api.md
+  - Configuration: configuration.md
+  - Observability: observability.md
+  - Operations: operations.md
+  - Develop & test: development.md
+  - Decisions:
+      - "1. One Postgres per service": adr/0001-one-postgres-per-service.md
+      - "2. AddReview abuse limits": adr/0002-abuse-limits-without-authentication.md
+      - "3. Rating summaries": adr/0003-rating-summary-single-statement.md
+theme:
+  name: material
+  features:
+    - navigation.sections
+    - navigation.top
+    - content.code.copy
+plugins:
+  - techdocs-core
