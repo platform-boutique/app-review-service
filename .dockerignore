@@ -1,4 +1,4 @@
-# The image build only needs go.mod, go.sum, cmd/, internal/ and proto/.
+# The image build only needs go.mod, go.sum, cmd/, internal/, proto/ and data/ (embedded seed).
 .git
 .gitignore
 .dockerignore
