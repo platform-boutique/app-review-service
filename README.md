@@ -149,4 +149,4 @@ Regenerate the Go code after editing the proto: `protoc --go_out=. --go_opt=path
 
 ## License
 
-To be decided by the owner. No `LICENSE` file exists in this repository yet.
+Apache License 2.0, see [LICENSE](LICENSE).
