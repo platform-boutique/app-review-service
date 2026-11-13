@@ -1,162 +1,152 @@
 # review-service
 
-A gRPC service that stores product reviews and star ratings for the platform-demo store: one page of a product's reviews (newest first), adding a review, and rating summaries (average, count and the per-star distribution) for many products at once, for the product grid. It owns its own Postgres database, creates its schema with embedded migrations at start-up and seeds it once from the store dataset.
+## Purpose and place in the shop
 
-## At a glance
+A gRPC service that stores product reviews and star ratings for the Everly shop: one page of a product's reviews (newest first), adding a review, and rating summaries (average, count and the per-star distribution) for many products at once, for the product grid. It owns its own Postgres database, creates its schema with embedded migrations at start-up and seeds it once from the store dataset. It calls no other service.
+
+Context diagram and the main flow as sequence diagram: [`docs/architecture.md`](docs/architecture.md).
 
 | | |
 |---|---|
-| **Language / runtime** | Go 1.26 (static binary, `CGO_ENABLED=0`) |
-| **Image** | built locally only: `review-service:local` |
-| **Protocol / port** | gRPC (HTTP/2, plaintext) on `8084` |
-| **Metrics** | Prometheus `/metrics` on `9090`; pushed over OTLP/gRPC only when an endpoint is set |
-| **Health** | Standard `grpc.health.v1.Health/Check` on `8084`: `NOT_SERVING` until migrations + seed are done and whenever the database does not answer a ping (checked every 5 s) |
-| **State** | Postgres (`reviews` table), via `DATABASE_URL` |
-| **Depends on** | Its own Postgres (optional: OTLP collector, Pyroscope) |
-| **Called by** | nobody yet (frontend: planned in slice 2) |
-| **gRPC reflection** | Enabled: `grpcurl` works without `-proto` |
+| Language / runtime | Go 1.26 (`go.mod`: `go 1.26.0`, `toolchain go1.26.10`), static binary, `CGO_ENABLED=0` |
+| Image | built locally only: `platform-demo/review-service:local` (`Dockerfile`, user `10001:10001`) |
+| Ports | gRPC `8084` (plaintext), HTTP `9090` (`/metrics`, pprof only with profiling) |
+| Health | `grpc.health.v1.Health/Check` on `8084`, `NOT_SERVING` until migrations + seed are done and whenever the database does not answer a ping (every 5 s) |
+| State | Postgres (`reviews` table) via `DATABASE_URL` |
+| Depends on | its own Postgres (required); OTLP collector and Pyroscope (optional) |
+| Called by | frontend (`GetRatingSummary`, `ListReviews`, `AddReview`; see `local/compose.yaml` and the frontend repo) |
+| gRPC reflection | enabled |
+
+## Status
+
+No CI pipeline, GitHub repository, Helm chart or Backstage registration exists yet; the service is built and run locally only. Status badges are added when the repo has a pipeline.
+
+## Quick start
+
+In the platform-demo workspace (this repo is built from `apps/review-service` by `local/compose.yaml`; the compose commands were not run for this README):
+
+```bash
+local/up.sh                      # builds all images and starts the shop, http://localhost:8080
+SKIP_BUILD=1 local/up.sh         # reuse images
+local/rebuild.sh review-service  # rebuild and recreate only this service
+```
+
+Run the tests (run on 2026-11-13, see Develop):
+
+```bash
+GOTOOLCHAIN=auto go vet ./... && GOTOOLCHAIN=auto go test -race -count=1 ./...
+```
 
 ## API
 
-Package `hipstershop`, service `ReviewService` ([`proto/reviews.proto`](proto/reviews.proto)).
+Package `hipstershop`, service `ReviewService` ([`proto/reviews.proto`](proto/reviews.proto)). Full rules, abuse limits and `grpcurl` examples: [`docs/api.md`](docs/api.md).
 
 | Method | Request | Response | Behaviour |
 |---|---|---|---|
-| `ListReviews` | `{ product_id, int32 page, int32 page_size }` | `{ repeated Review reviews, int32 total, double average_rating }` | Newest first (`created_at DESC`, id as tie-break). `page` is 1-based, `0` means 1; `page_size` `0` means 10, above 50 is capped at 50. `total` and `average_rating` (1 decimal, 0 if none) cover all reviews of the product. A page past the end returns no reviews. Empty `product_id` or negative values: `INVALID_ARGUMENT` |
-| `AddReview` | `{ product_id, author_name, int32 rating, comment }` | `Review` | Text fields are trimmed; `product_id` 1-128, `author_name` 1-80, `comment` 1-2000 characters (runes), `rating` 1-5, no NUL characters, otherwise `INVALID_ARGUMENT`. The server sets `id` (UUID) and `created_at`. **Abuse limits** (below): an equal review → `ALREADY_EXISTS`; too many from one author on one product → `RESOURCE_EXHAUSTED` |
-| `GetRatingSummary` | `{ repeated string product_ids }` (max 200) | `{ repeated RatingSummary summaries }` | One entry per distinct id, in request order; `average` has 1 decimal; products without reviews (and unknown ids) come back with `count` 0, `average` 0 and `star_counts` all zeros. More than 200 ids or an empty id: `INVALID_ARGUMENT` |
+| `ListReviews` | `product_id`, `page`, `page_size` | `reviews[]`, `total`, `average_rating` | Newest first. `page` is 1-based (`0` means 1), `page_size` `0` means 10, above 50 is capped. Empty `product_id` or negative values: `INVALID_ARGUMENT` |
+| `AddReview` | `product_id`, `author_name`, `rating`, `comment` | `Review` | Validated and trimmed (`rating` 1-5, name 1-80, comment 1-2000 characters). An equal review is `ALREADY_EXISTS`; too many from one author on one product is `RESOURCE_EXHAUSTED` |
+| `GetRatingSummary` | `product_ids[]` (max 200) | `summaries[]` | One entry per distinct id in request order: `average`, `count`, `star_counts` (5 entries, 1-star first). Unknown products return zeros |
 
-`Review` = `{ id, product_id, author_name, int32 rating, comment, google.protobuf.Timestamp created_at }`.
-`RatingSummary` = `{ product_id, double average, int32 count, repeated int32 star_counts }`. `star_counts` always has exactly 5 entries: index 0 = number of 1-star reviews ... index 4 = number of 5-star reviews, so `sum(star_counts) == count`. Average, count and the five buckets come out of one SQL statement (`count(*) FILTER (WHERE rating = k)`), i.e. one snapshot, so a concurrent `AddReview` can never make them disagree. The field is additive (tag 4); older clients ignore it.
-Errors: `UNAVAILABLE` while the database is not ready/reachable, `INTERNAL` (without SQL details, which are logged) for other storage errors. A recovery interceptor turns a handler panic into `INTERNAL`. Product ids are not checked against the catalog.
-
-**Product ids** are trimmed and otherwise used exactly as given: they are **case sensitive** (`Blue-Frock-162` and `blue-frock-162` are two different products), at most 128 characters after trimming (more → `INVALID_ARGUMENT`), no NUL. Callers must send the catalog's id spelling.
-
-**AddReview abuse limits** (no authentication exists, so the author name is just text the caller sends):
-
-- *Duplicates:* a review is rejected with `ALREADY_EXISTS` ("this review was already posted for this product") if the table already has one with the same product id, the same author name and the same text, compared case-insensitively (Unicode simple case folding) with surrounding blanks ignored. The check and the insert run in one transaction under a Postgres advisory lock, so concurrent identical calls store one. No schema change or unique index: rows that are already duplicates (e.g. from before this check) are left alone and block nothing.
-- *Rate limit:* at most `REVIEW_RATE_LIMIT` (default 5) reviews per `REVIEW_RATE_WINDOW` (default `1m`) per product + author name (case-insensitive); the next one → `RESOURCE_EXHAUSTED` with the seconds to wait. Invalid requests do not use the budget, rejected ones are not counted. It is **in memory and per process**: a restart resets it and N replicas allow N times the limit; an author who changes the name gets a new bucket, so it slows down accidental double posts and naive scripts, not a determined attacker. At most 50,000 live buckets are kept; beyond that new buckets are refused until old ones expire.
-- *Not done:* checking the product id against the catalog (an unknown id is accepted; out of scope until the catalog client exists), authentication, moderation.
-
-Examples (run against the container, see below):
-
-```bash
-grpcurl -plaintext -d '{"product_id":"blue-frock-162","page_size":2}' localhost:8084 hipstershop.ReviewService/ListReviews
-grpcurl -plaintext -d '{"product_id":"blue-frock-162","author_name":"Smoke Test","rating":5,"comment":"Works in the container."}' \
-  localhost:8084 hipstershop.ReviewService/AddReview
-grpcurl -plaintext -d '{"product_ids":["blue-frock-162","no-such-product"]}' localhost:8084 hipstershop.ReviewService/GetRatingSummary
-grpcurl -plaintext localhost:8084 grpc.health.v1.Health/Check
-```
+Errors: `UNAVAILABLE` while the database is not ready or reachable; `INTERNAL` (no SQL details, they are logged) for other storage errors; a recovery interceptor turns a handler panic into `INTERNAL`. Product ids are case sensitive and not checked against the catalog.
 
 ## Configuration
 
-| Variable | Default | Description |
+Every variable read by the code (`grep -rn 'Getenv\|getenv'` over `cmd/` and `internal/`, checked 2026-11-13). All configuration is by environment; there is no config file.
+
+| Variable | Default | Required | Meaning |
+|---|---|---|---|
+| `DATABASE_URL` | none | **yes** | Postgres URL, e.g. `postgres://review:review@review-db:5432/reviews?sslmode=disable`. The process logs an error and exits 1 if it is unset. A 5 s connect timeout is added unless the URL sets one |
+| `PORT` | `8084` | no | gRPC listen port. The `healthcheck` subcommand reads it too |
+| `METRICS_PORT` | `9090` | no | HTTP port for `/metrics` (and pprof when profiling is on) |
+| `REVIEW_RATE_LIMIT` | `5` | no | `AddReview` limit per product + author per window; `0` switches the limit off. A value that is not a non-negative integer keeps the default (and logs a warning), it never disables the limit |
+| `REVIEW_RATE_WINDOW` | `1m` | no | Window of the limit, a Go duration (`30s`, `2m`). Invalid or non-positive: default and a warning |
+| `OTEL_EXPORTER_OTLP_ENDPOINT` | unset (telemetry off) | no | OTLP/**gRPC** endpoint URL with scheme for traces, metrics and logs |
+| `OTEL_SDK_DISABLED` | unset | no | `true` forces telemetry off even with an endpoint |
+| `OTEL_SERVICE_NAME` | `review-service` | no | `service.name` resource attribute |
+| `OTEL_METRIC_EXPORT_INTERVAL` | `15000` | no | Metric push interval: a number of milliseconds, or a Go duration (`15s`). Invalid values fall back to 15 s |
+| `PYROSCOPE_ADDR` | unset (profiling off) | no | Pyroscope server URL. Profiling (push and pprof endpoints) is on only if this is set |
+| `ENABLE_PROFILING` | unset | no | `0` forces profiling off even with `PYROSCOPE_ADDR` |
+| `ENABLE_TRACING` | unset | no | Legacy: `0` forces telemetry off |
+| `COLLECTOR_SERVICE_ADDR` | unset | no | **Legacy, to be removed** (owner decision 2026-11-13): `host:port` of a collector; turns telemetry on without `OTEL_EXPORTER_OTLP_ENDPOINT` |
+| `HOSTNAME` | OS hostname | no | Used as `service.instance.id` (the pod name in Kubernetes) |
+| `OTEL_RESOURCE_ATTRIBUTES` | unset | no | Read by the OTel SDK resource detector (`resource.WithFromEnv`), not by this code directly |
+
+The OTLP exporters of the OpenTelemetry Go SDK also read their own standard `OTEL_EXPORTER_OTLP_*` variables (headers, TLS, timeout); they are not read by this service's code and were not tested. `OTEL_TRACES_SAMPLER` is **not** honoured: the sampler is fixed to always-on (`otlp.go`). `LOG_LEVEL` does not exist: the log level is logrus' default (info).
+
+With everything but `DATABASE_URL` unset the service starts without connecting to any collector. Start-up: the gRPC server listens at once (health `NOT_SERVING`); a background loop runs the goose migrations and the seed, retrying every 2 s until the database is reachable.
+
+## Observability
+
+What the service emits today (code read 2026-11-13; the compose observability profile was not run for this README):
+
+| Signal | Today | Not there yet (standards section 6) |
 |---|---|---|
-| `DATABASE_URL` | **required** | Postgres URL, e.g. `postgres://review:review@review-db:5432/reviews?sslmode=disable`. The process exits if it is unset. A 5 s connect timeout is added unless the URL sets one |
-| `PORT` | `8084` | gRPC listen port |
-| `REVIEW_RATE_LIMIT` | `5` | `AddReview` limit per product + author per window; `0` switches the limit off. A value that is not a non-negative integer keeps the default (and logs a warning), it never disables the limit |
-| `REVIEW_RATE_WINDOW` | `1m` | Window of the limit, a Go duration (`30s`, `2m`). Invalid or non-positive: default and a warning |
-| `METRICS_PORT` | `9090` | Prometheus (and, with profiling, pprof) HTTP port |
-| `OTEL_EXPORTER_OTLP_ENDPOINT` | unset (telemetry off) | OTLP/**gRPC** endpoint for traces, metrics and logs (scheme required). Legacy fallback: `COLLECTOR_SERVICE_ADDR` (`host:port`). Telemetry is on only if one of them is set and non-empty |
-| `OTEL_SDK_DISABLED` | — | `true` forces telemetry off even with an endpoint (the legacy `ENABLE_TRACING=0` does the same) |
-| `OTEL_METRIC_EXPORT_INTERVAL` | `15000` | Milliseconds between metric pushes |
-| `OTEL_SERVICE_NAME` | `review-service` | `service.name` |
-| `PYROSCOPE_ADDR` | unset (profiling off) | Profiling (Pyroscope push **and** the pprof endpoints on `METRICS_PORT`) is on only if this is set and `ENABLE_PROFILING` is not `0` |
-| `ENABLE_PROFILING` | — | `0` forces profiling off |
+| Traces | OTLP/gRPC, only when `OTEL_EXPORTER_OTLP_ENDPOINT` is set. A server span per inbound gRPC call (`otelgrpc`), W3C `traceparent` + `baggage` propagation, sampler always-on | spans for Postgres calls |
+| Metrics | Prometheus on `:9090/metrics`: `grpc_server_*` (go-grpc-prometheus with handling-time histogram), Go runtime and process metrics. The same registry is pushed over OTLP when the endpoint is set | `build_info`, DB pool stats, business counters (reviews added, rejected by reason) |
+| Logs | JSON on stdout, one object per line: `timestamp` (RFC3339Nano), `severity`, `message` plus fields. Mirrored over OTLP when the endpoint is set | `trace_id` / `span_id` on the stdout line, `service`, `version`, `LOG_LEVEL` |
+| Profiles | Pyroscope push (CPU, alloc objects/space, inuse objects/space) and pprof on the metrics port, only with `PYROSCOPE_ADDR` | goroutine / mutex / block profiles, tags `version`, `environment` |
 
-With everything but `DATABASE_URL` unset the service starts without connecting to any collector (log of the container smoke run):
+Resource attributes today: `service.name`, `service.instance.id` and the SDK's telemetry attributes (plus whatever `OTEL_RESOURCE_ATTRIBUTES` adds). `service.version`, `service.namespace` and `deployment.environment` are not set. Review texts and author names are not logged by the handlers' normal path (not audited line by line).
 
-```
-{"message":"telemetry off — set OTEL_EXPORTER_OTLP_ENDPOINT to enable","severity":"info",...}
-{"message":"profiling off — set PYROSCOPE_ADDR to enable","severity":"info",...}
-{"message":"metrics endpoint on :9090 (pprof: false)","severity":"info",...}
-{"message":"starting grpc server on [::]:8084","severity":"info",...}
-{"message":"database ready: 1 migration(s) applied, 351 seed review(s) inserted","severity":"info",...}
-{"message":"health: SERVING","severity":"info",...}
-```
+Example queries (not run against a live backend): `sum by (grpc_method, grpc_code) (rate(grpc_server_handled_total{grpc_service="hipstershop.ReviewService"}[5m]))`.
 
-Start-up: the gRPC server listens at once (health `NOT_SERVING`); a background loop runs the goose migrations (under goose's Postgres session advisory lock) and the seed, retrying every 2 s until the database is reachable. The seed (`data/reviews.json`, embedded) is inserted in one transaction under `pg_advisory_xact_lock` only if the `reviews` table is empty. SIGTERM/SIGINT: health goes `NOT_SERVING`, `GracefulStop` (10 s cap), then the pool is closed and the process exits 0.
+## Data
 
-## Container image
+Postgres, database owned by this service. One table `reviews` (`id uuid`, `product_id`, `author_name`, `rating smallint 1-5`, `comment`, `created_at timestamptz`) with check constraints that repeat the validation limits, and one index `(product_id, created_at DESC, id DESC)` for the newest-first listing.
 
-Multi-stage [`Dockerfile`](Dockerfile): `golang:1.26-alpine` builder (`--platform=$BUILDPLATFORM`, `GOARCH=$TARGETARCH`, so no hard-coded architecture), `alpine:3.24` runtime with the single binary at `/app/review-service`.
+Migrations: [goose](https://github.com/pressly/goose) SQL files in `internal/reviews/migrations/`, embedded in the binary and applied at start-up under goose's advisory lock, forward-only (`00001_create_reviews.sql`).
 
-- **User:** `10001:10001` (numeric, non-root).
-- **HEALTHCHECK:** `/app/review-service healthcheck` calls the gRPC health service on `127.0.0.1:$PORT` and exits 0 only on `SERVING`, so the image needs no extra tool.
-- **EXPOSE:** `8084`, `9090`. `.dockerignore` keeps `.git`, tests and tools out of the context.
-- Built once locally on amd64 (`docker build -t review-service:local .`, about 12 MB); arm64 was not built.
-
-## Used by (local shop)
-
-- **frontend** (env `REVIEW_SERVICE_ADDR`, default `review-service:8084`) calls `GetRatingSummary` once per catalogue page for the stars on the cards, and `ListReviews` / `AddReview` on the product page. If this service is down the pages render without stars and posting returns 503; `ALREADY_EXISTS` and `RESOURCE_EXHAUSTED` from `AddReview` are shown as readable messages (422 / 429).
-- The catalog's own `rating` and `review_count` are derived from this service's seed (`apps/product-catalog-service/tools/sync_reviews.py`); re-run it whenever `data/reviews.json` changes, otherwise the "Top rated" sort and the displayed stars disagree.
-
-The local stack (`local/compose.yaml` in the workspace) runs `review-db` and `review-service` on port 8084. Run on the live stack: the frontend shows the seeded ratings and reviews and `AddReview` works. The API now returns `star_counts`; the frontend does not draw the bars yet (slice 7, frontend agent). The running image has not been rebuilt with this change (not run).
-
-## Not deployed anywhere yet
-
-No Helm chart, pipeline, Backstage entry or GitHub repository exists yet; the service is only built and run locally (docker compose in `local/` is the first target).
-
-## Running locally
-
-Requirements: Go 1.26 (`GOTOOLCHAIN=auto` fetches it), Docker, [`grpcurl`](https://github.com/fullstorydev/grpcurl).
-
-What was actually run:
+Seed: `data/reviews.json` (embedded, 351 reviews in the last smoke run) is inserted in one transaction under `pg_advisory_xact_lock` only if the `reviews` table is empty. Deleting every review therefore re-seeds on the next start. The seed is generated from the catalog dataset:
 
 ```bash
-# regenerate the Go code after editing proto/reviews.proto (protoc 3.21.12, protoc-gen-go v1.36.11, protoc-gen-go-grpc 1.6.1)
-protoc --go_out=. --go_opt=paths=source_relative --go-grpc_out=. --go-grpc_opt=paths=source_relative proto/reviews.proto
+python3 tools/make_reviews.py <product-catalog-service>/data/seed/products.json --spread-until 2026-10-01T00:00:00Z   # not run today
+```
 
-# unit tests (validation, pagination, summaries, error mapping, telemetry switches) + vet
-go vet ./... && go test ./...
+Ratings, comments and names come from the catalog dataset; `--spread-until` spreads `created_at` deterministically over the year before that date, so a re-run is byte-identical. The catalog's own `rating` and `review_count` are derived from this seed (`apps/product-catalog-service/tools/sync_reviews.py`): re-run it whenever `data/reviews.json` changes, otherwise the "Top rated" sort and the displayed stars disagree.
 
-# integration tests against a throwaway Postgres (each test creates and drops its own database)
-docker run -d --rm --name review-it-pg -e POSTGRES_USER=review -e POSTGRES_PASSWORD=review \
+## Develop
+
+Requirements: Go 1.26 (`GOTOOLCHAIN=auto` fetches it), Docker for integration tests, [`grpcurl`](https://github.com/fullstorydev/grpcurl) for manual calls. Layout: `cmd/server/` (entry point, telemetry, health), `internal/reviews/` (service, validation, rate limit, store, migrations, seed), `data/` (embedded seed), `proto/`, `tests/integration/`, `testdata/`, `tools/`.
+
+| Step | Command | Result on 2026-11-13 |
+|---|---|---|
+| Vet + unit tests | `go vet ./... && go test -race -count=1 ./...` | run, passed |
+| Format | `gofmt -l .` | run, no files listed |
+| Lint | `golangci-lint run ./...` (config `.golangci.yaml`, v2 default linters) | run with golangci-lint v2.11.4, 0 issues; also with `--build-tags integration`, 0 issues. CI pins v2.14.0: not run |
+| Integration (Postgres) | see below | not run today (earlier runs by the author are in `docs/development.md`) |
+| Vulnerability / security scan | `govulncheck ./...`, `gosec -exclude-generated ./...` | not run today |
+| Image | `docker build -t platform-demo/review-service:local .` | not run today |
+| Docs | `mkdocs build --strict` (mkdocs 1.6.1 + mkdocs-techdocs-core 1.7.1, Python 3.12 venv made with uv) | run, passed |
+
+Integration tests (build tag `integration`, each test creates and drops its own database):
+
+```bash
+docker run -d --rm --name review-it-pg --memory 256m -e POSTGRES_USER=review -e POSTGRES_PASSWORD=review \
   -p 127.0.0.1:55432:5432 postgres:17-alpine
 TEST_DATABASE_URL='postgres://review:review@127.0.0.1:55432/postgres?sslmode=disable' \
   go test -race -tags integration ./...
-
-# container smoke run: image + that Postgres on one docker network
-docker build -t review-service:local .
-docker network create review-smoke && docker network connect --alias review-db review-smoke review-it-pg
-docker run -d --name review-smoke-svc --network review-smoke -p 127.0.0.1:58084:8084 \
-  -e DATABASE_URL='postgres://review:review@review-db:5432/postgres?sslmode=disable' review-service:local
+docker rm -f review-it-pg
 ```
 
-The smoke run checked: health `SERVING` and Docker health `healthy`, the three RPCs above, `INVALID_ARGUMENT` for rating 9, health `NOT_SERVING` + `UNAVAILABLE` after disconnecting the database from the network and `SERVING` again after reconnecting it, and exit code 0 on `docker stop`.
-`golangci-lint run` (default linters) and `gosec -exclude-generated ./...` report no issues (both re-run after the `star_counts` change).
+Regenerate the Go code after editing the proto: `protoc --go_out=. --go_opt=paths=source_relative --go-grpc_out=. --go-grpc_opt=paths=source_relative proto/reviews.proto` (protoc 3.21.12, protoc-gen-go v1.36.11, protoc-gen-go-grpc 1.6.1; not run today). Proto changes are additive only, server first.
 
-`star_counts` (slice 7) was verified with unit tests (in-memory store: bucket arithmetic, five zeros for unknown products) and integration tests against a throwaway `postgres:17-alpine`: zero reviews, unknown product, every seeded product's distribution equal to a direct SQL count, and 8 concurrent writers adding 200 reviews while 4 readers called `GetRatingSummary` (every answer had 5 entries summing to `count`, `count` never decreased, final counts exact). The container image was not rebuilt and the gRPC call was not made against a running container (not run).
+## Operate
 
-Seed data: `python3 tools/make_reviews.py <product-catalog-service>/data/seed/products.json --spread-until 2026-10-01T00:00:00Z` (Python 3.11+, standard library). Ratings, comments and names come from the catalog dataset; because every source review has the same timestamp, `--spread-until` spreads `created_at` deterministically (SHA-256 of product id + index) over the year before that date. The output is sorted, so a re-run is byte-identical.
+- **Health:** `grpc.health.v1` on the service port, for the empty service name and `hipstershop.ReviewService`. `NOT_SERVING` until migrations and seed are done, and again whenever the Postgres ping fails (every 5 s); handlers answer `UNAVAILABLE` meanwhile. The image `HEALTHCHECK` runs `/app/review-service healthcheck` (exit 0 only on `SERVING`).
+- **Shutdown:** on SIGTERM/SIGINT health goes `NOT_SERVING`, `GracefulStop` with a 10 s cap (then `Stop`), the metrics server stops (5 s), telemetry is flushed (5 s), the pool is closed, exit 0.
+- **Scaling:** stateless except for Postgres, several replicas are possible (migrations and seed take advisory locks). The `AddReview` rate limit is **per process**: N replicas allow N times the limit. Multi-replica operation was not run.
+- **Image:** Alpine runtime, user `10001:10001`, `EXPOSE 8084 9090`, about 12 MB when last built.
+- Failure behaviour and runbook: [`docs/operations.md`](docs/operations.md).
 
-## Project structure
+## Known limits
 
-```
-├── cmd/server/
-│   ├── main.go            # entrypoint: telemetry, profiling, gRPC server, DB watcher, graceful shutdown
-│   ├── otlp.go            # OTLP traces/metrics/logs (same as shipping-service, plus OTEL_SDK_DISABLED)
-│   └── healthcheck.go     # `review-service healthcheck` for the container HEALTHCHECK
-├── internal/reviews/
-│   ├── service.go         # gRPC handlers, error mapping
-│   ├── validate.go        # request limits, paging, rounding
-│   ├── ratelimit.go       # AddReview rate limiter, REVIEW_RATE_* parsing
-│   ├── store.go           # Postgres store (pgx/v5)
-│   ├── migrate.go         # goose migrations, seed, Setup
-│   └── migrations/        # embedded SQL migrations
-├── data/                  # reviews.json (embedded seed) + data.go
-├── proto/                 # reviews.proto + generated Go
-├── tests/integration/     # tests against a real Postgres (build tag `integration`)
-├── testdata/              # small fixture products.json and the reviews made from it
-├── tools/make_reviews.py  # products.json -> data/reviews.json
-└── Dockerfile
-```
-
-## Known limitations
-
-- No authentication or moderation: anyone who can reach the port can add reviews. Duplicates and bursts per product+author are limited (see above), but the rate limit is per process and keyed on a name the caller chooses; product ids are not checked against the catalog.
-- The seed runs whenever the table is empty, so deleting every review re-seeds on the next start.
+- No authentication or moderation: anyone who can reach the port can add reviews. Duplicates and bursts per product+author are limited, but the rate limit is per process and keyed on a name the caller chooses; product ids are not checked against the catalog.
+- The seed runs whenever the table is empty.
 - `ListReviews` reads the totals and the page in two statements without a transaction; a concurrent `AddReview` can make `total` differ by one from the page.
-- Database calls do not produce trace spans (no pgx tracer).
+- No spans for database calls; no `trace_id` in logs; no version/commit exposed.
 - Offset paging (page limit 1,000,000); fine for a few reviews per product.
-- The smoke-run image was built before the last change of the "database not ready" error message (code-only change, unit tests re-run).
+- Not run: arm64 build, more than one replica, the image after the latest code changes (the last image smoke run is recorded in `docs/development.md`). The legacy `COLLECTOR_SERVICE_ADDR` is still read (to be removed).
+
+## License
+
+To be decided by the owner. No `LICENSE` file exists in this repository yet.
