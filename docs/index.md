@@ -10,7 +10,7 @@ A gRPC service that stores product reviews and star ratings for the Everly shop.
 | | |
 |---|---|
 | Runtime | Go 1.26, static binary, image `platform-demo/review-service:local` (built locally only) |
-| Ports | gRPC `8084`, HTTP `9090` (`/metrics`) |
+| Ports | gRPC `8084`, HTTP `9090` (`/metrics`, scraped by Alloy) |
 | State | its own Postgres (`reviews`) |
 | Called by | frontend |
 | Status | not deployed anywhere yet; no pipeline, no Helm chart |

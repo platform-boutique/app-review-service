@@ -6,14 +6,14 @@ Commands run on 2026-11-13 for the standards change (host: Go 1.22 with `GOTOOLC
 
 | Command | Result |
 |---|---|
-| `go vet ./... && go test -race -count=1 ./...` | passed (2 packages with tests) |
-| `golangci-lint run ./...` and `golangci-lint run --build-tags integration ./...` (golangci-lint v2.11.4, `.golangci.yaml`) | 0 issues. The shared pipeline pins v2.14.0: not run |
+| `go vet ./... && go test -count=1 ./...` (observability step 3, 2026-11-14; `-race` not repeated) | passed (3 packages with tests: `internal/obs` is the same package as in checkout-service: env matrix, log shape, resource attributes, blackholed-collector start and shutdown) |
+| `golangci-lint run ./...` and `golangci-lint run --build-tags integration ./...` (golangci-lint v2.11.4, `.golangci.yaml`, re-run 2026-11-14) | 0 issues. The shared pipeline pins v2.14.0: not run |
 | `gofmt -l .` | no files listed |
 | `mkdocs build --strict` (mkdocs 1.6.1, mkdocs-techdocs-core 1.7.1, Python 3.12 venv made with uv) | passed |
 
 ## What the earlier author ran (recorded, not re-run for this page)
 
-Commands and results below come from the README before the standards change; they were not repeated on 2026-11-13. The image was not rebuilt after the `star_counts` change.
+Commands and results below come from the README before the standards change; they were not repeated on 2026-11-13. The image was not rebuilt after the `star_counts` change or the observability step. The integration tests were re-run on 2026-11-14 against a throwaway `postgres:17-alpine` container and pass; a smoke run of the binary with OTLP and Pyroscope pointed at a listener that never answers (database unreachable) exited 0 about 4 s after SIGTERM.
 
 Requirements: Go 1.26 (`GOTOOLCHAIN=auto` fetches it), Docker, [`grpcurl`](https://github.com/fullstorydev/grpcurl).
 
