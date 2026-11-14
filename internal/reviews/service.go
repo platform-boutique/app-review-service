@@ -56,7 +56,7 @@ func (s *Service) checkReady() error {
 }
 
 // toStatus maps internal errors to gRPC status codes without leaking SQL details to the caller.
-func (s *Service) toStatus(method string, err error) error {
+func (s *Service) toStatus(ctx context.Context, method string, err error) error {
 	switch {
 	case errors.Is(err, ErrInvalid):
 		return status.Error(codes.InvalidArgument, err.Error())
@@ -67,10 +67,10 @@ func (s *Service) toStatus(method string, err error) error {
 	case errors.Is(err, context.DeadlineExceeded):
 		return status.Error(codes.DeadlineExceeded, "deadline exceeded")
 	case errors.Is(err, ErrUnavailable):
-		s.log.Warnf("[%s] database unavailable: %v", method, err)
+		s.log.WithContext(ctx).WithError(err).Warnf("[%s] database unavailable", method)
 		return status.Error(codes.Unavailable, "database unavailable")
 	default:
-		s.log.Errorf("[%s] storage error: %v", method, err)
+		s.log.WithContext(ctx).WithError(err).Errorf("[%s] storage error", method)
 		return status.Error(codes.Internal, "internal error")
 	}
 }
@@ -97,18 +97,18 @@ func clampInt32(v int64) int32 {
 func (s *Service) ListReviews(ctx context.Context, req *pb.ListReviewsRequest) (*pb.ListReviewsResponse, error) {
 	pid, err := ValidateProductID(req.GetProductId())
 	if err != nil {
-		return nil, s.toStatus("ListReviews", err)
+		return nil, s.toStatus(ctx, "ListReviews", err)
 	}
 	limit, offset, err := Page(req.GetPage(), req.GetPageSize())
 	if err != nil {
-		return nil, s.toStatus("ListReviews", err)
+		return nil, s.toStatus(ctx, "ListReviews", err)
 	}
 	if err := s.checkReady(); err != nil {
 		return nil, err
 	}
 	page, total, avg, err := s.store.List(ctx, pid, limit, offset)
 	if err != nil {
-		return nil, s.toStatus("ListReviews", err)
+		return nil, s.toStatus(ctx, "ListReviews", err)
 	}
 	resp := &pb.ListReviewsResponse{
 		Reviews:       make([]*pb.Review, 0, len(page)),
@@ -130,20 +130,20 @@ func (s *Service) ListReviews(ctx context.Context, req *pb.ListReviewsRequest) (
 func (s *Service) AddReview(ctx context.Context, req *pb.AddReviewRequest) (*pb.Review, error) {
 	n, err := ValidateNewReview(req.GetProductId(), req.GetAuthorName(), req.GetRating(), req.GetComment())
 	if err != nil {
-		return nil, s.toStatus("AddReview", err)
+		return nil, s.toStatus(ctx, "AddReview", err)
 	}
 	if err := s.checkReady(); err != nil {
 		return nil, err
 	}
 	if ok, retry := s.limiter.Allow(rateKey(n)); !ok {
-		s.log.WithFields(logrus.Fields{"product_id": n.ProductID}).Warn("[AddReview] rate limited")
+		s.log.WithContext(ctx).WithFields(logrus.Fields{"product_id": n.ProductID}).Warn("[AddReview] rate limited")
 		return nil, status.Errorf(codes.ResourceExhausted, "too many reviews from this author for this product, try again in %d seconds", int64(math.Ceil(retry.Seconds())))
 	}
 	r, err := s.store.Add(ctx, n)
 	if err != nil {
-		return nil, s.toStatus("AddReview", err)
+		return nil, s.toStatus(ctx, "AddReview", err)
 	}
-	s.log.WithFields(logrus.Fields{"product_id": r.ProductID, "review_id": r.ID, "rating": r.Rating}).Info("[AddReview] review stored")
+	s.log.WithContext(ctx).WithFields(logrus.Fields{"product_id": r.ProductID, "review_id": r.ID, "rating": r.Rating}).Info("[AddReview] review stored")
 	return toPB(r), nil
 }
 
@@ -151,14 +151,14 @@ func (s *Service) AddReview(ctx context.Context, req *pb.AddReviewRequest) (*pb.
 func (s *Service) GetRatingSummary(ctx context.Context, req *pb.GetRatingSummaryRequest) (*pb.GetRatingSummaryResponse, error) {
 	ids, err := SummaryIDs(req.GetProductIds())
 	if err != nil {
-		return nil, s.toStatus("GetRatingSummary", err)
+		return nil, s.toStatus(ctx, "GetRatingSummary", err)
 	}
 	if err := s.checkReady(); err != nil {
 		return nil, err
 	}
 	found, err := s.store.Summaries(ctx, ids)
 	if err != nil {
-		return nil, s.toStatus("GetRatingSummary", err)
+		return nil, s.toStatus(ctx, "GetRatingSummary", err)
 	}
 	return &pb.GetRatingSummaryResponse{Summaries: BuildSummaries(ids, found)}, nil
 }
