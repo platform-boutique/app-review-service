@@ -12,7 +12,7 @@ flowchart LR
     prom[Prometheus scrape :9090] -.-> review
 ```
 
-review-service calls no other service. The caller is taken from the workspace `local/compose.yaml` and the earlier README; it was not re-verified in the frontend's code for this page.
+review-service calls no other service. The caller is the frontend (`ListReviews`, `GetRatingSummary` and `AddReview`; checked against the `origin/main` code of the callers on 2026-11-21).
 
 ## Main flow: adding and reading a review
 
@@ -32,7 +32,7 @@ sequenceDiagram
     RV-->>FE: reviews, total, average_rating
 ```
 
-If this service is down the frontend renders pages without stars and answers 503 when posting (frontend behaviour as documented before; not re-verified).
+If this service is down the frontend renders pages without stars and answers 503 when posting (frontend behaviour as documented in the frontend's README; not run against a stopped review-service for this page).
 
 ## Start-up and readiness
 
