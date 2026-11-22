@@ -1,6 +1,6 @@
 # Configuration
 
-Every variable read by the code (`grep -rn 'Getenv\|getenv'` over `cmd/` and `internal/`, checked 2026-11-13). All configuration is by environment; there is no config file.
+Every variable read by the code (`grep -rn 'Getenv\|getenv'` over `cmd/` and `internal/`, checked 2026-11-22). All configuration is by environment; there is no config file.
 
 | Variable | Default | Required | Meaning |
 |---|---|---|---|
