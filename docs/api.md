@@ -1,6 +1,6 @@
 # API
 
-Package `hipstershop`, service `ReviewService` ([`proto/reviews.proto`](https://github.com/platform-boutique/app-review-service/blob/main/proto/reviews.proto)).
+Package `hipstershop`, service `ReviewService` ([`proto/reviews.proto`](https://github.com/platform-boutique/app-review-service/blob/main/proto/reviews.proto)) (legacy package kept on purpose, see [ADR 4](adr/0004-proto-package-stays-hipstershop.md)).
 
 | Method | Request | Response | Behaviour |
 |---|---|---|---|

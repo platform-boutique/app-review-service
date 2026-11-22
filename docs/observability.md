@@ -19,7 +19,7 @@
 
 **Graceful shutdown** (SIGTERM or SIGINT): health goes `NOT_SERVING`, `GracefulStop` with a 5 s cap (then `Stop`), then the telemetry flush runs, cut off after 4 s, the pool is closed: the process exits within 9 s even when the collector is blackholed. Run against a listener that never answers (OTLP and Pyroscope both pointed at it, database unreachable) the binary exited 0 about 4 s after SIGTERM (smoke run, not part of the unit tests; with a reachable database not re-measured).
 
-**Not there yet** (standards section 6): spans for Postgres calls, DB pool stats and business counters (reviews added, rejected by reason); `build_info` is there. The handlers log product id, review id and rating only; author names and comments (free text from visitors) are not logged, and the new log-shape test checks that.
+**Business counters (OBS-20):** none, on purpose. The standard names orders placed, stock reservations and payments by outcome; the review service owns none of them, and the gRPC RED series (`grpc_server_handled_total{grpc_method,grpc_code}`) already show every `AddReview` outcome (`OK`, `ALREADY_EXISTS`, `RESOURCE_EXHAUSTED`, `INVALID_ARGUMENT`, `UNAVAILABLE`) by status. Decision of 2026-11-22: no extra counter. The handlers log product id, review id and rating only; author names and comments (free text from visitors) are not logged, and the new log-shape test checks that.
 
 Example queries (not run against a live backend): `sum by (grpc_method, grpc_code) (rate(grpc_server_handled_total{grpc_service="hipstershop.ReviewService"}[5m]))`.
 
