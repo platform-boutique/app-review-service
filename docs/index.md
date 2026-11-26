@@ -13,6 +13,6 @@ A gRPC service that stores product reviews and star ratings for the Everly shop.
 | Ports | gRPC `8084`, HTTP `9090` (`/metrics`, scraped by Alloy) |
 | State | its own Postgres (`reviews`) |
 | Called by | frontend |
-| Status | shared CI pipeline (merge-only, publishes nothing); no Helm chart; not deployed in any environment yet |
+| Status | shared CI pipeline with Publish; Helm chart in platform-demo-helm; not deployed in any environment yet |
 
 Pages: [architecture](architecture.md), [API](api.md), [configuration](configuration.md), [observability](observability.md), [operations](operations.md), [development](development.md), [decisions](adr/0001-one-postgres-per-service.md), [proto package exception](adr/0004-proto-package-stays-hipstershop.md).
